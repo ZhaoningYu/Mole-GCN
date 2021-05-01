@@ -4,10 +4,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from utils.data_loader import FileLoader
-from utils.ops import Generator
+from utils.ops import Generator, norm
 import numpy as np
 from tqdm import tqdm
-from utils.model import GCN, norm
+from utils.model import GCN
 
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
@@ -16,11 +16,11 @@ os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 def get_args():
     parser = argparse.ArgumentParser(description='Args for graph predition')
     parser.add_argument('-seed', type=int, default=1, help='seed')
-    parser.add_argument('-data', default='PTC', help='data folder name')
+    parser.add_argument('-data', default='PROTEINS', help='data folder name')
     parser.add_argument('-fold', type=int, default=1, help='fold (1..10)')
-    parser.add_argument('-num_epochs', type=int, default=400, help='epochs')
+    parser.add_argument('-num_epochs', type=int, default=200, help='epochs')
     parser.add_argument('-batch', type=int, default=8, help='batch size')
-    parser.add_argument('-edge_weight', type=bool, default=True, help='If data have edge labels')
+    parser.add_argument('-edge_weight', type=bool, default=False, help='If data have edge labels')
     parser.add_argument('-lr', type=float, default=0.01, help='learning rate')
     parser.add_argument('-w_d', type=float, default=0.0005, help='weight decay')
     parser.add_argument('-deg_as_tag', type=int, default=0, help='1 or degree')
@@ -89,7 +89,6 @@ def train(features, adj, node_labels, labels, DEVICE, args, num_cliques):
         all_accuracy = []
         for i in range(10):
             net = GCN(input_size=num_cliques).to(DEVICE)
-            loss = nn.CrossEntropyLoss()
             optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.w_d)
             test_indices = []
             for j in range(num_of_test):
@@ -100,10 +99,10 @@ def train(features, adj, node_labels, labels, DEVICE, args, num_cliques):
             if mask_train == mask_test:
                 print("ERROR")
             test_accuracy = 0
-            train_acc_list, test_acc_list = [], []
             for epoch in range(args.num_epochs):
                 net.train()
                 output = net(adj, features)
+                loss = nn.CrossEntropyLoss()
                 l = loss(output[mask_train], node_labels[mask_train])
                 optimizer.zero_grad()
                 l.backward()
@@ -112,7 +111,6 @@ def train(features, adj, node_labels, labels, DEVICE, args, num_cliques):
                 with torch.no_grad():
                     test_output = net(adj, features)
                     test_acc = accuracy(test_output[mask_test], node_labels[mask_test])
-                    test_acc_list.append(test_acc)
                     if test_acc > test_accuracy:
                         test_accuracy = test_acc
             all_accuracy.append(test_accuracy)
@@ -128,9 +126,9 @@ def main():
     data = FileLoader(args).load_data()
     labels = data.graph_labels
     for y in range(len(labels)):
-        # labels[y] = labels[y] - 1
-        if labels[y] == -1:
-            labels[y] = 0
+        labels[y] = labels[y] - 1
+        # if labels[y] == -1:
+        #     labels[y] = 0
     g_graph, vocab = Generator(data).gen_large_graph()
     num_cliques = len(vocab)
     features, adj, node_labels = gen_feature_adj_labels(g_graph, labels, num_cliques)

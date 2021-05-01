@@ -1,7 +1,15 @@
 import networkx as nx
 from tqdm import tqdm
 import math
+import numpy as np
 
+
+def norm(adj):
+    adj += np.eye(adj.shape[0])
+    degree = np.array(adj.sum(1))
+    degree = np.diag(np.power(degree, -0.5))
+    print("degree:", degree)
+    return degree.dot(adj).dot(degree)
 
 class Generator(object):
     def __init__(self, data):
