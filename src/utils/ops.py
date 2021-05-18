@@ -2,7 +2,8 @@ import networkx as nx
 from tqdm import tqdm
 import math
 import numpy as np
-
+import copy
+import matplotlib.pyplot as plt
 
 def norm(adj):
     adj += np.eye(adj.shape[0])
@@ -15,15 +16,244 @@ class Generator(object):
     def __init__(self, data):
         self.data = data
         self.num_cliques = 0
+        self.vocab = {}
+        self.weight_vocab = {}
+        self.node_count = {}
+        self.edge_count = {}
+        self.whole_node_count = {}
+        self.g_list = data.g_list
+        self.node_labels = self.data.node_labels
+
+    def gen_components(self, g_list):
+        nodes_labels = self.node_labels
+        G = nx.Graph()
+        for g in tqdm(range(len(g_list)), desc='Gen components', unit='graph'):
+            edge_list = []
+            mcb = self.find_minimum_cycle_basis(g_list[g])
+
+            mcb_tuple = [tuple(ele) for ele in mcb]
+
+            edges = []
+            for e in g_list[g].edges:
+                count = 0
+                for c in mcb:
+                    if e[0] in set(c) and e[1] in set(c):
+                        count += 1
+                        break
+                if count == 0:
+                    edges.append(e)
+            edges = list(set(edges))
+
+            for e in edges:
+                weight = g_list[g].get_edge_data(e[0], e[1])['weight']
+                edge = ((nodes_labels[e[0]-1], nodes_labels[e[1]-1]), weight)
+                clique_id = self.add_to_vocab(edge)
+
+                edge_list.append(clique_id)
+                # self.add_weight(clique_id, g)
+
+            for m in mcb_tuple:
+                weight = tuple(self.find_ring_weights(m, g_list[g]))
+                ring = []
+                for i in range(len(m)):
+                    ring.append(nodes_labels[m[i]-1])
+                cycle = (tuple(ring), weight)
+                edge_list.append(self.add_to_vocab(cycle))
+
+            check_point = {}
+            for e in edge_list:
+                self.add_weight(e, g)
+                check_point[e] = 0
+                if e not in self.whole_node_count:
+                    self.whole_node_count[e] = 1
+                else:
+                    self.whole_node_count[e] += 1
+
+            for e in edge_list:
+                if e not in self.node_count:
+                    self.node_count[e] = 1
+                else:
+                    if check_point[e] == 1:
+                        continue
+                    else:
+                        self.node_count[e] += 1
+                check_point[e] = 1
+
+            for e in edge_list:
+                G.add_edge("M{}".format(g+1), "C{}".format(e), weight=(self.weight_vocab[(g+1, e)]/(len(edges)+len(mcb_tuple))))
+                # G.add_edge("M{}".format(g + 1), "C{}".format(e), weight=1)
+
+            for e in range(len(edges)):
+                for i in range(e, len(edges)):
+                    for j in edges[e]:
+                        if j in edges[i]:
+                            weight = g_list[g].get_edge_data(edges[e][0], edges[e][1])['weight']
+                            edge = ((nodes_labels[edges[e][0] - 1], nodes_labels[edges[e][1] - 1]), weight)
+                            weight_i = g_list[g].get_edge_data(edges[i][0], edges[i][1])['weight']
+                            edge_i = ((nodes_labels[edges[i][0] - 1], nodes_labels[edges[i][1] - 1]), weight_i)
+                            final_edge = tuple(sorted((self.add_to_vocab(edge), self.add_to_vocab(edge_i))))
+                            if final_edge not in self.edge_count:
+                                self.edge_count[final_edge] = 1
+                            else:
+                                self.edge_count[final_edge] += 1
+
+            for m in range(len(mcb_tuple)):
+                for i in range(m, len(mcb_tuple)):
+                    for j in mcb_tuple[m]:
+                        if j in mcb_tuple[i]:
+                            weight = tuple(self.find_ring_weights(mcb_tuple[m], g_list[g]))
+                            ring = []
+                            for t in range(len(mcb_tuple[m])):
+                                ring.append(nodes_labels[mcb_tuple[m][t] - 1])
+                            cycle = (tuple(ring), weight)
+
+                            weight_i = tuple(self.find_ring_weights(mcb_tuple[i], g_list[g]))
+                            ring_i = []
+                            for t in range(len(mcb_tuple[i])):
+                                ring_i.append(nodes_labels[mcb_tuple[i][t] - 1])
+                            cycle_i = (tuple(ring_i), weight_i)
+
+                            final_edge = tuple(sorted((self.add_to_vocab(cycle), self.add_to_vocab(cycle_i))))
+                            if final_edge not in self.edge_count:
+                                self.edge_count[final_edge] = 1
+                            else:
+                                self.edge_count[final_edge] += 1
+
+            for e in range(len(edges)):
+                for m in range(len(mcb_tuple)):
+                    for i in edges[e]:
+                        if i in mcb_tuple[m]:
+                            weight_e = g_list[g].get_edge_data(edges[e][0], edges[e][1])['weight']
+                            edge_e = ((nodes_labels[edges[e][0] - 1], nodes_labels[edges[e][1] - 1]), weight_e)
+                            weight_m = tuple(self.find_ring_weights(mcb_tuple[m], g_list[g]))
+                            ring_m = []
+                            for t in range(len(mcb_tuple[m])):
+                                ring_m.append(nodes_labels[mcb_tuple[m][t] - 1])
+                            cycle_m = (tuple(ring_m), weight_m)
+
+                            final_edge = tuple(sorted((self.add_to_vocab(edge_e), self.add_to_vocab(cycle_m))))
+                            if final_edge not in self.edge_count:
+                                self.edge_count[final_edge] = 1
+                            else:
+                                self.edge_count[final_edge] += 1
+
+        return G
+
+    def add_weight(self, node_id, g):
+        if (g+1, node_id) not in self.weight_vocab:
+            self.weight_vocab[(g+1, node_id)] = 1
+        else:
+            self.weight_vocab[(g+1, node_id)] += 1
+
+    def update_weight(self, g):
+        for (u, v) in g.edges():
+            if u[0] == 'M':
+                g[u][v]['weight'] = g[u][v]['weight'] * (math.log(len(self.g_list) / (self.node_count[int(v[1:])])))
+            else:
+                g[u][v]['weight'] = g[u][v]['weight'] * (math.log(len(self.g_list) / (self.node_count[int(u[1:])])))
+        return g
+
+    def add_edge(self, g):
+        edges = list(self.edge_count.keys())
+        for i in edges:
+            g.add_edge("C{}".format(i[0]), "C{}".format(i[1]), weight=math.exp(math.log(self.edge_count[i]/math.sqrt(self.whole_node_count[i[0]]*self.whole_node_count[i[1]]))))
+
+        # keys = list(self.vocab.keys())
+        # for key in range(len(keys)):
+        #     for i in range(key, len(keys)):
+        #         for k in keys[key][0]:
+        #             if k in keys[i][0]:
+        #                 g.add_edge("C{}".format(self.vocab[keys[key]]), "C{}".format(self.vocab[keys[i]]), weight=0.05)
+        return g
+
+
+    def add_to_vocab(self, clique):
+        c = copy.deepcopy(clique[0])
+        weight = copy.deepcopy(clique[1])
+        for i in range(len(c)):
+            if (c, weight) in self.vocab:
+                return self.vocab[(c, weight)]
+            else:
+                c = self.shift_right(c)
+                weight = self.shift_right(weight)
+        self.vocab[(c, weight)] = len(self.vocab)+1
+        return self.vocab[(c, weight)]
 
     def gen_large_graph(self):
         g_list = self.data.g_list
-        nodes_labels = self.data.node_labels
-        cliques = self.gen_cliques(g_list)
-        vocab = self.gen_vocab(cliques, nodes_labels)
-        count_edges, count_nodes, cliques_weight, moles_weight = self.gen_edges(cliques, vocab, nodes_labels)
-        g_graph = self.gen_final_graph(count_edges, count_nodes, cliques_weight, moles_weight, vocab)
-        return g_graph, vocab
+        # nodes_labels = self.data.node_labels
+        # cliques = self.gen_cliques(g_list)
+        # vocab = self.gen_vocab(cliques, nodes_labels)
+        # vocab2 = self.gen_cliques_vocab(g_list, nodes_labels)
+        g = self.gen_components(g_list)
+        g = self.update_weight(g)
+        print("length of vocab", len(self.vocab))
+        g_final = self.add_edge(g)
+        # diff = set(vocab) - set(vocab2)
+        # print("Here is the difference:", diff)
+        # print(f"vocab1:{len(vocab)}")
+        # print(f"vocab2:{len(vocab2)}")
+        # count_edges, count_nodes, cliques_weight, moles_weight = self.gen_edges(cliques, self.vocab, nodes_labels)
+        # g_graph = self.gen_final_graph(count_edges, count_nodes, cliques_weight, moles_weight, self.vocab)
+        print("number of nodes", g_final.number_of_nodes())
+        return g_final, self.vocab
+
+    def gen_cliques_vocab(self, g_list, nodes_labels):
+        mcb_vocab = []
+        edge_vocab = []
+        vocab = {}
+        for g in tqdm(range(len(g_list)), desc="Gen vocab", unit='graph'):
+            mcb = self.find_minimum_cycle_basis(g_list[g])
+            mcb_tuple = [tuple(ele) for ele in mcb]
+            edges = []
+
+            for e in g_list[g].edges:
+                count = 0
+                for c in mcb:
+                    if e[0] in set(c) and e[1] in set(c):
+                        count += 1
+                        break
+                if count == 0:
+                    edges.append(e)
+            edges = list(set(edges))
+            # print("edges:", edges)
+
+            for e in edges:
+                weight = g_list[g].get_edge_data(e[0], e[1])['weight']
+                edge_vocab.append((((nodes_labels[e[0]-1], nodes_labels[e[1]-1]), weight), ((nodes_labels[e[1]-1], nodes_labels[e[0]-1]), weight)))
+            if len(mcb_tuple) != 0:
+                for m in mcb_tuple:
+                    ring_list = []
+                    # m = list(m)
+                    # print(f"m: {m}")
+                    weight = self.find_ring_weights(m, g_list[g])
+                    # print(f"weight:{weight}")
+                    for i in range(len(m)):
+                        # print(f"sub m{m}")
+                        ring = list(copy.deepcopy(m))
+                        for j in range(len(m)):
+                            ring[j] = nodes_labels[m[j]-1]
+                        # print(f"ring {ring}")
+                        ring_list.append((tuple(ring), tuple(weight)))
+                        m = tuple(self.shift_right(list(m)))
+                        weight = self.shift_right(weight)
+                    ring_tuple = tuple(ring_list)
+                    mcb_vocab.append(ring_tuple)
+        # print(f"mcb_vocab{mcb_vocab}")
+        mcb_vocab = list(set(map(tuple, mcb_vocab)))
+        edge_vocab = list(set(tuple(edge_vocab)))
+        # print(f"number of mcb and edge:{len(edge_vocab)}, {len(mcb_vocab)}")
+        edge_vocab.extend(mcb_vocab)
+        for i in range(len(edge_vocab)):
+            vocab[edge_vocab[i]] = i+1
+
+        # Sort G_vocab
+        sorted_g_vocab = {}
+        sorted_key = sorted(vocab, key=vocab.get)
+        for w in sorted_key:
+            sorted_g_vocab[w] = vocab[w]
+        return sorted_g_vocab
+
 
     def gen_cliques(self, g_list):
         cliques = []
@@ -33,6 +263,7 @@ class Generator(object):
             mcb = self.find_minimum_cycle_basis(g_list[g])
             # convert elements of mcb to tuple
             mcb_tuple = [tuple(ele) for ele in mcb]
+            # print(mcb_tuple, g)
 
             # Find all edges not in cycles and add into cliques
             edges = []
@@ -274,7 +505,24 @@ class Generator(object):
         return nx.cycle_basis(g)
 
     def shift_right(self, l):
-        return [l[-1]] + l[:-1]
+        if type(l) == int:
+            return l
+        elif type(l) == tuple:
+            l = list(l)
+            return tuple([l[-1]] + l[:-1])
+        elif type(l) == list:
+            return [l[-1]] + l[:-1]
+
+
+    def find_ring_weights(self, ring, g):
+        weight_list = []
+        for i in range(len(ring)-1):
+            weight = g.get_edge_data(ring[i], ring[i+1])['weight']
+            weight_list.append(weight)
+        weight = g.get_edge_data(ring[-1], ring[0])['weight']
+        weight_list.append(weight)
+        return weight_list
+
 
     def find_index(self, node, graph, vocab, nodes_labels):
         nodes_labels = nodes_labels

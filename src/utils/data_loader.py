@@ -41,7 +41,7 @@ class FileLoader(object):
 
         with open('../data/%s/node_labels.txt' % (data), 'r') as f:
             nl = f.readlines()
-        node_labels = [int(i) for i in nl]  # labels for all graphs
+        node_labels = [int(i[-2]) for i in nl]  # labels for all graphs
         print("nodes_labels", len(node_labels))
 
         G_edges = []  # Edges for all graphs

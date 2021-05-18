@@ -8,6 +8,7 @@ from utils.ops import Generator, norm
 import numpy as np
 from tqdm import tqdm
 from utils.model import GCN
+import matplotlib.pyplot as plt
 
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
@@ -16,11 +17,11 @@ os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 def get_args():
     parser = argparse.ArgumentParser(description='Args for graph predition')
     parser.add_argument('-seed', type=int, default=1, help='seed')
-    parser.add_argument('-data', default='PROTEINS', help='data folder name')
+    parser.add_argument('-data', default='MUTAG', help='data folder name')
     parser.add_argument('-fold', type=int, default=1, help='fold (1..10)')
-    parser.add_argument('-num_epochs', type=int, default=200, help='epochs')
+    parser.add_argument('-num_epochs', type=int, default=1450, help='epochs')
     parser.add_argument('-batch', type=int, default=8, help='batch size')
-    parser.add_argument('-edge_weight', type=bool, default=False, help='If data have edge labels')
+    parser.add_argument('-edge_weight', type=bool, default=True, help='If data have edge labels')
     parser.add_argument('-lr', type=float, default=0.01, help='learning rate')
     parser.add_argument('-w_d', type=float, default=0.0005, help='weight decay')
     parser.add_argument('-deg_as_tag', type=int, default=0, help='1 or degree')
@@ -44,14 +45,18 @@ def gen_feature_adj_labels(g_graph, labels, num_cliques):
     feature_m = np.zeros((number_of_moles, number_of_cliques))
     for i in tqdm(range(1, number_of_moles+1),desc="feature matrix", unit="graph"):
         for k, dict in g_graph.adj["M{}".format(i)].items():
+            # print("i-1", i-1)
+            # print("k-1", int(k[1:])-1)
             feature_m[i-1][int(k[1:])-1] = 1
 
     features = np.r_[feature_c, feature_m]
 
     # Generate node labels
     y = np.empty(g_graph.number_of_nodes(), int)
-    # print(len(y))
+    print("length y", len(y))
     for i in range(len(feature_c), len(y)):
+        # print("i", i)
+        # print("len feature", len(feature_c))
         y[i] = labels[i - len(feature_c)]
 
     adj = np.zeros((g_graph.number_of_nodes(), g_graph.number_of_nodes()))
@@ -61,13 +66,18 @@ def gen_feature_adj_labels(g_graph, labels, num_cliques):
             if k[0] == "M":
                 if item[0] == "M":
                     adj[int(k[1:]) + number_of_cliques - 1][int(item[1:]) + number_of_cliques - 1] = g_graph.get_edge_data(k, item)['weight']
+                    # adj[int(k[1:]) + number_of_cliques - 1][int(item[1:]) + number_of_cliques - 1] = 1
                 else:
                     adj[int(k[1:]) + number_of_cliques - 1][int(item[1:]) - 1] = g_graph.get_edge_data(k, item)['weight']
+                    # adj[int(k[1:]) + number_of_cliques - 1][int(item[1:]) - 1] = 1
             else:
                 if item[0] == "M":
                     adj[int(k[1:]) - 1][int(item[1:]) + number_of_cliques - 1] = g_graph.get_edge_data(k, item)['weight']
+                    # adj[int(k[1:]) - 1][int(item[1:]) + number_of_cliques - 1] = 1
                 else:
                     adj[int(k[1:]) - 1][int(item[1:]) - 1] = g_graph.get_edge_data(k, item)['weight']
+                    # adj[int(k[1:]) - 1][int(item[1:]) - 1] = 1
+
     adj = norm(adj)
     return features, adj, y
 
@@ -88,7 +98,7 @@ def train(features, adj, node_labels, labels, DEVICE, args, num_cliques):
     for j in range(10):
         all_accuracy = []
         for i in range(10):
-            net = GCN(input_size=num_cliques).to(DEVICE)
+            net = GCN(input_size=num_cliques, output_size=6).to(DEVICE)
             optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.w_d)
             test_indices = []
             for j in range(num_of_test):
@@ -101,10 +111,11 @@ def train(features, adj, node_labels, labels, DEVICE, args, num_cliques):
             test_accuracy = 0
             for epoch in range(args.num_epochs):
                 net.train()
+                optimizer.zero_grad()
                 output = net(adj, features)
                 loss = nn.CrossEntropyLoss()
                 l = loss(output[mask_train], node_labels[mask_train])
-                optimizer.zero_grad()
+
                 l.backward()
                 optimizer.step()
                 net.eval()
@@ -113,24 +124,38 @@ def train(features, adj, node_labels, labels, DEVICE, args, num_cliques):
                     test_acc = accuracy(test_output[mask_test], node_labels[mask_test])
                     if test_acc > test_accuracy:
                         test_accuracy = test_acc
+            # net.eval()
+            # with torch.no_grad():
+            #     test_output = net(adj, features)
+            #     test_accuracy = accuracy(test_output[mask_test], node_labels[mask_test])
             all_accuracy.append(test_accuracy)
             print(f"Best test accuracu of round {i} is {test_accuracy}")
         print(f"Test accuracy of model is {Average(all_accuracy)}")
         total_acc.append(Average(all_accuracy))
     print("Total average test acccuracy:", Average(total_acc))
+    f = open(f'../results/{args.data}.txt', 'a')
+    # f.write(f'Ten times test accuracy: {total_acc}.')
+    f.write(f'Total average test accuracy: {Average(total_acc)}.')
 
 
 def main():
     args = get_args()
-    DEVICE = "cpu"
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     data = FileLoader(args).load_data()
     labels = data.graph_labels
     for y in range(len(labels)):
-        labels[y] = labels[y] - 1
-        # if labels[y] == -1:
-        #     labels[y] = 0
+        # labels[y] = labels[y] - 1
+        if labels[y] == -1:
+            labels[y] = 0
+        elif labels[y] == +1:
+            labels[y] = 1
     g_graph, vocab = Generator(data).gen_large_graph()
+    new_pos = nx.spring_layout(g_graph)
+    nx.draw_networkx(g_graph, new_pos, node_size=30, edge_color='black', font_size=3, font_color='purple')
+    plt.show()
+    print("vocab", vocab)
     num_cliques = len(vocab)
+    print("num_cliques:", num_cliques)
     features, adj, node_labels = gen_feature_adj_labels(g_graph, labels, num_cliques)
     features = torch.tensor(features, dtype=torch.float32).to(DEVICE)
     node_labels = torch.tensor(node_labels, dtype=torch.long).to(DEVICE)
